@@ -1,0 +1,135 @@
+#!/usr/bin/env python
+import sys
+import re
+import os
+import bcrypt
+import getpass
+
+import ConfigParser
+
+def take(N, bignum):
+  mod = bignum % N
+  bignum = bignum / N
+  return (mod, bignum)
+
+def choice(letters, bignum):
+  choice, bignum = take(len(letters), bignum)
+  return (letters[choice], bignum)
+
+def ensure(letters, password, bignum):
+  for k in letters:
+    if k in password: return (password, bignum)
+
+  (pos, bignum) = take(len(password), bignum)
+  (letter, bignum) = choice(letters, bignum)
+  return password[:pos] + letter + password[pos+1:], bignum
+
+def convertBase(result, alphabet):
+  value = [alphabet.index(x) for x in result][::-1]
+  return sum([value[k] * len(alphabet)**k for k in range(len(value))])
+
+def generatePassword(password, site):
+  alphabet = './0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+  letters = 'abcdefghijklmnopqrstuvwxyz';
+  uletters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  numbers = '0123456789';
+  symbols = '!@#$%*-?+=';
+  version = '00';
+
+  site = re.sub(r'[^'+alphabet+']', '', site)
+  salt = '$2a$11$' + (version + site*20)[:22]
+
+  bignum = convertBase(
+    bcrypt.hashpw(password, salt)[len(salt):]
+  , alphabet)
+
+  password = ''
+  for k in range(8):
+    letter, bignum = choice(letters + uletters + numbers + symbols, bignum)
+    password += letter
+
+  # Keep randomzing letters until we ensure a good makeup
+  onum = 0
+  while onum != bignum:
+    onum = bignum
+    password, bignum = ensure(numbers, password, bignum)
+    password, bignum = ensure(uletters, password, bignum)
+    password, bignum = ensure(symbols, password, bignum)
+
+  # Fetch [a-z] for the first letter, and [a-zA-Z] for the last
+  front, bignum = choice(letters, bignum)
+  back, bignum = choice(letters+uletters, bignum)
+
+  return front+password+back
+
+# Read the ini file into groups
+group = None
+passwords = {}
+for line in open(os.path.expanduser('~/.passwords'), 'r'):
+  line = line.strip()
+  if not line or line[0] == ';':
+    if group:
+      passwords[group].append(('', line))
+    continue
+  elif line[0] == '[' and line[-1] == ']':
+    group = line[1:-1]
+    passwords[group] = []
+  elif group:
+    if ' ' in line:
+      (site, comment) = line.split(' ', 1)
+    else:
+      (site, comment) = line, ''
+
+    if site: passwords[group].append((site, comment))
+
+
+password = getpass.getpass('Password: ').strip()
+site = raw_input('Site: ').strip()
+
+# Find the correct group
+for key in passwords.keys():
+  salt = key[:29]
+  if len(salt) < 29: continue
+  try:
+    if bcrypt.hashpw(password, salt) == key:
+      group = key
+      break
+  except:
+    print 'Unable to read key:', key
+else:
+  print 'We could not find your key in ~/.passwords'
+  print 'If you want to start using it, please add:'
+  print '['+bcrypt.hashpw(password, bcrypt.gensalt())+']'
+  print ' ^^^ ^^^ ^^^ to ~/.passwords'
+  sys.exit(1)
+
+print generatePassword(password, site)
+
+for _site, _comment in passwords[group]:
+  if site == _site:
+    if _comment:
+      print 'Comment:', _comment
+    break
+else:
+  save = None
+  while save not in ('Y', 'N'):
+    save = raw_input('Site not recognised, would you like to save it? (Y/N): ').strip()
+
+  if save == 'N':
+    sys.exit(0)
+
+  comment = raw_input('Comment: ').strip()
+
+  passwords[group].append((site, comment))
+
+  filename = os.path.expanduser('~/.passwords')
+  with open(filename+'.tmp', 'w') as out:
+    for group, sites in passwords.iteritems():
+      print >> out, '[%s]' % group
+      for site,comment in sites:
+        print >> out, '%s %s' % (site, comment)
+      print >> out
+  os.rename(filename, filename+'.bak')
+  os.rename(filename+'.tmp', filename)
+  os.unlink(filename+'.bak')
+
